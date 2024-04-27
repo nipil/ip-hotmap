@@ -1,0 +1,8 @@
+IP 172.21.11.114.58744 > 172.21.0.1.53: UDP, length 43
+IP 172.21.0.1.5353 > 224.0.0.251.5353: UDP, length 50
+IP 172.21.11.114.49600 > 185.199.108.133.443: tcp 0
+IP 172.21.11.114 > 145.24.145.63: ICMP echo request, id 40264, seq 1, length 64
+IP 145.24.145.63 > 172.21.11.114: ICMP echo reply, id 40264, seq 1, length 64
+IP6 fe80::79a9:54c5:b048:a33d.5353 > ff02::fb.5353: UDP, length 50
+IP 172.21.0.1.53 > 172.21.11.114.34876: UDP, length 93
+ARP, Request who-has 172.21.0.1 tell 172.21.11.114, length 28
