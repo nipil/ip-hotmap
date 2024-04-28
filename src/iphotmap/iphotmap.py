@@ -157,6 +157,26 @@ class TcpdumpRecord:
 class TcpdumpThread(threading.Thread):
     COMMAND = 'tcpdump'
 
+    _RE_ADDRESSES = re.compile(r'^(?:\S+\s+\S+\s+)?'
+                               r'(?:'
+                               r'IP\s+(\d+\.\d+\.\d+\.\d+)(?:\.\d+)?\s+>\s+(\d+\.\d+\.\d+\.\d+)(?:\.\d+)?:\s+'
+                               r'|'
+                               r'IP6\s+(\S+?)(?:\.\d+)?\s+>\s+(\S+?)(?:\.\d+)?:\s+'
+                               r'|'
+                               r'ARP,\s+(?:'
+                               r'Request\s+who-has\s+(\S+)\s+(?:\S+\s+)?tell\s+(\S+)'
+                               r'|'
+                               r'Reply\s+(\S+)\s+is-at\s+\S+'
+                               r'),'
+                               r')')
+
+    @classmethod
+    def addresses_from_line(cls, line: str) -> Optional[tuple[str, ...]]:
+        match = cls._RE_ADDRESSES.match(line)
+        if match:
+            return tuple(m for m in match.groups() if m is not None)
+        return None
+
     @classmethod
     def get_available_interfaces(cls):
         try:
@@ -220,21 +240,25 @@ class TcpdumpThread(threading.Thread):
         last_time = get_time_int()
         # TODO: do not block on line read if no packet captured, so summary and notification still happen "on time"
         for line in stream:
-            # detect
-            if self._detected_offset is None:
-                self._detected_offset = TcpdumpRecord.detect_format_offset_from_line(line)
-                if self._detected_offset is None:
-                    logging.info(f'Skipping packet until format detection succeeds : {line}')
-                    continue
-                logging.info(f'Successfully detected format offset: {self._detected_offset}')
-            # extract
-            addresses = TcpdumpRecord.addresses_from_line(line, self._detected_offset)
+            addresses = self.addresses_from_line(line)
             if addresses is None:
-                continue
+                print(line.strip())
+
+            # detect
+            # if self._detected_offset is None:
+            #     self._detected_offset = TcpdumpRecord.detect_format_offset_from_line(line)
+            #     if self._detected_offset is None:
+            #         logging.info(f'Skipping packet until format detection succeeds : {line}')
+            #         continue
+            #     logging.info(f'Successfully detected format offset: {self._detected_offset}')
+            # extract
+            # addresses = TcpdumpRecord.addresses_from_line(line, self._detected_offset)
+            # if addresses is None:
+            #     continue
             # update
             current_time = get_time_int()
-            for address in addresses:
-                seen_address[address] = current_time
+            # for address in addresses:
+            #     seen_address[address] = current_time
             # shutdown handler
             if self._termination_flag.is_set():
                 break
