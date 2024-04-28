@@ -1,8 +1,0 @@
-lo    In  IP 127.0.0.1.49018 > 127.0.0.1.5990: tcp 0
-eth0  Out IP 172.21.11.114.60472 > 172.21.0.1.53: UDP, length 44
-eth0  In  IP 172.21.0.1.53 > 172.21.11.114.60472: UDP, length 93
-eth0  Out IP 172.21.11.114 > 145.24.145.63: ICMP echo request, id 38818, seq 1, length 64
-eth0  In  IP 145.24.145.63 > 172.21.11.114: ICMP echo reply, id 38818, seq 1, length 64
-eth0  In  ARP, Request who-has 172.21.11.114 (00:15:5d:75:4e:94) tell 172.21.0.1, length 28
-eth0  Out ARP, Reply 172.21.11.114 is-at 00:15:5d:75:4e:94, length 28
-eth0  M   IP6 fe80::79a9:54c5:b048:a33d.5353 > ff02::fb.5353: UDP, length 48
