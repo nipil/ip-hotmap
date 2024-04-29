@@ -2,16 +2,18 @@
 
 import argparse
 import dataclasses
+import json
 import logging
 import os
 import pathlib
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Optional, Self
 
 ENV_NAME_PATH = 'PATH'
 
@@ -27,7 +29,7 @@ def _signal_handler(sig, frame):
         App.termination_requested.set()
 
 
-def get_time_int():
+def get_time_int() -> int:
     return int(time.time())
 
 
@@ -192,6 +194,113 @@ class TcpdumpThread(threading.Thread):
             logging.error(f'Requesting exit because an error happened during tcpdump processing: {e}')
             self._request_termination()
         logging.info('tcpdump thread finished.')
+
+
+class HaproxySource:
+    def info(self):
+        raise NotImplementedError
+
+    def stat(self):
+        raise NotImplementedError
+
+    def sessions(self):
+        raise NotImplementedError
+
+
+class Haproxy:
+    info: Optional[dict[str, str]]
+    stat: Optional[tuple[dict[str, str], ...]]
+    # sessions: Optional[Any]
+
+    SESSION_SPECIAL_CASE = re.compile(r'^(\w+)\[')
+
+    def __init__(self, source: HaproxySource, request_termination: threading.Event):
+        self.source = source
+        self._request_termination = request_termination
+        self.info = None
+        self.stat = None
+        self.sessions = None
+
+    @staticmethod
+    def _extract_dict_name_value(dictionary) -> dict[str, str]:
+        return {d['field']['name']: d['value']['value'] for d in dictionary}
+
+    @classmethod
+    def _sub_dict_session_items(cls, items):
+        for item in items.split():
+            key, value = cls.SESSION_SPECIAL_CASE.sub(r'\1=[', item, count=1).split('=', maxsplit=1)
+            yield key, value
+
+    @classmethod
+    def _dict_sessions(cls, sessions):
+        for session in sessions:
+            key, items = session.split(': ', maxsplit=1)
+            value = dict(cls._sub_dict_session_items(items))
+            yield key, value
+
+    def refresh(self) -> Self:
+        self.info = self._extract_dict_name_value(self.source.info())
+        self.stat = tuple(self._extract_dict_name_value(item) for item in self.source.stat())
+        self.sessions = dict(self._dict_sessions(self.source.sessions()))
+        return self
+
+    class UnixSocketSource(HaproxySource):
+        CMD_INFO = 'show info json'
+        CMD_STAT = 'show stat json'
+        CMD_SESS = 'show sess'
+
+        BUFFER_SIZE = 4096
+
+        def __init__(self, socket_path):
+            self._path = socket_path
+
+        def _get(self, command: str) -> str:
+            buf = bytearray()
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.connect(self._path)
+                    client.sendall(command.encode())
+                    while True:
+                        chunk = client.recv(self.BUFFER_SIZE)
+                        if len(chunk) == 0:
+                            logging.warning('received zero bytes')
+                            break
+                        buf += chunk
+            except socket.error as e:
+                raise AppException(f'Requesting exit because an error happened during haproxy socket processing: {e}')
+            return buf.decode()
+
+        def info(self):
+            return json.loads(self._get(self.CMD_INFO))
+
+        def stat(self):
+            return json.loads(self._get(self.CMD_STAT))
+
+        def sessions(self):
+            return self._get(self.CMD_SESS).splitlines()
+
+    class FileSource(HaproxySource):
+        def __init__(self, info_file_json: str, stat_file_json: str, sess_file_raw: str):
+            self.info_file_json = info_file_json
+            self.stat_file_json = stat_file_json
+            self.sess_file_raw = sess_file_raw
+
+        @staticmethod
+        def _read_file(file_path: str) -> str:
+            try:
+                with open(file_path, 'rt') as f:
+                    return f.read()
+            except OSError as e:
+                raise AppException(f'Requesting exit because an error happened during haproxy file processing: {e}')
+
+        def info(self):
+            return json.loads(self._read_file(self.info_file_json))
+
+        def stat(self):
+            return json.loads(self._read_file(self.stat_file_json))
+
+        def sessions(self):
+            return self._read_file(self.sess_file_raw).splitlines()
 
 
 class App:

@@ -1,2 +1,3 @@
+0x685ed545db10: proto=tcpv4 src=10.1.2.3:59488 fe=FOO be=BAR srv=baz ts=00 epoch=0x3 age=3s calls=3 rate=0 cpu=0 lat=0 rq[f=848202h,i=0,an=00h,rx=47s,wx=,ax=] rp[f=80048202h,i=0,an=00h,rx=47s,wx=,ax=] scf=[8,0h,fd=1468] scb=[8,1h,fd=1469] exp=1s rc=0 c_exp=
 0x7fc60402c330: proto=unix_stream src=unix:1 fe=GLOBAL be=<NONE> srv=<none> ts=00 epoch=0 age=0s calls=2 rate=1 cpu=0 lat=0 rq[f=c0c020h,i=0,an=00h,rx=,wx=,ax=] rp[f=80008000h,i=0,an=00h,rx=,wx=,ax=] scf=[8,0h,fd=56] scb=[8,1h,fd=-1] exp=30s rc=0 c_exp=
 0x555ed4d27d30: proto=tcpv4 src=192.168.1.1:38658 fe=FRONT be=BACK srv=srv1 ts=00 epoch=0 age=27m31s calls=45 rate=0 cpu=0 lat=0 rq[f=848000h,i=0,an=00h,rx=30s,wx=,ax=] rp[f=80048000h,i=0,an=00h,rx=30s,wx=,ax=] scf=[8,0h,fd=2474] scb=[8,1h,fd=2475] exp=30s rc=0 c_exp=
