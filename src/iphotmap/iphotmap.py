@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Optional, Self
+from typing import Optional, Self, Iterator, TypedDict, Sequence, IO
 
 ENV_NAME_PATH = 'PATH'
 
@@ -23,7 +23,7 @@ DEFAULT_INTERVAL_SEC = 5
 DEFAULT_LOG_LEVEL = 'WARNING'
 
 
-def _signal_handler(sig, frame):
+def _signal_handler(sig: int, frame) -> None:
     if sig == signal.SIGINT:
         logging.info("Shutdown requested via SIGINT !")
         App.termination_requested.set()
@@ -40,7 +40,7 @@ class AppException(Exception):
 @dataclasses.dataclass
 class SharedData:
     tcpdump_active_ips: Optional[tuple[tuple[int, ...], ...]] = None
-    lock: threading.Lock = threading.Lock()
+    lock = threading.Lock()
 
 
 def find_cmd_from_env_path(name: str) -> pathlib.Path:
@@ -78,7 +78,7 @@ class TcpdumpThread(threading.Thread):
         return None
 
     @classmethod
-    def get_available_interfaces(cls):
+    def get_available_interfaces(cls) -> str:
         try:
             tcpdump_path = str(find_cmd_from_env_path(cls.COMMAND))
         except FileNotFoundError as e:
@@ -90,8 +90,8 @@ class TcpdumpThread(threading.Thread):
             raise AppException(e)
         return result.stdout
 
-    def __init__(self, sudo, interface, capture_filter, debug_unknown, interval, hits_ttl, shared_data: SharedData,
-                 termination_flag):
+    def __init__(self, sudo: bool, interface: str, capture_filter: str, debug_unknown: bool, interval: int,
+                 hits_ttl: int, shared_data: SharedData, termination_flag: threading.Event) -> None:
         super(TcpdumpThread, self).__init__(daemon=True)
         # checks
         if interface is None:
@@ -114,13 +114,13 @@ class TcpdumpThread(threading.Thread):
         self._detected_offset: Optional[int] = None
         self._already_found_parsing_error = False
 
-    def _log_parsing_error_once(self, message):
+    def _log_parsing_error_once(self, message) -> None:
         if self._already_found_parsing_error:
             return
         self._already_found_parsing_error = True
         logging.warning(message)
 
-    def _request_termination(self):
+    def _request_termination(self) -> None:
         logging.info('Requesting termination.')
         self._termination_flag.set()
 
@@ -129,12 +129,12 @@ class TcpdumpThread(threading.Thread):
         return tuple(
             tuple(int(x) for x in ip.split('.')) for ip, timestamp in seen_ip.items() if timestamp > threshold_time)
 
-    def _publish_active_ips(self, active_ips):
+    def _publish_active_ips(self, active_ips: tuple[tuple[int, ...], ...]) -> None:
         # replace data reference for other threads
         with self._shared_data.lock:
             self._shared_data.tcpdump_active_ips = active_ips
 
-    def _process_packets(self, stream):
+    def _process_packets(self, stream: IO[str]) -> None:
         seen_address = dict()
         last_time = get_time_int()
         # TODO: do not block on line read if no packet captured, so summary and notification still happen "on time"
@@ -142,7 +142,7 @@ class TcpdumpThread(threading.Thread):
             # extract
             addresses = self.addresses_from_line(line)
             if addresses is None:
-                if self._log_unknown:
+                if self._debug_unknown:
                     logging.debug(f'Unrecognized packet line: {line.strip()}')
                 continue
             # update
@@ -161,7 +161,7 @@ class TcpdumpThread(threading.Thread):
                 # publish
                 self._publish_active_ips(active_ips)
 
-    def _build_command(self):
+    def _build_command(self) -> list[str]:
         tcpdump_path = str(find_cmd_from_env_path(self.COMMAND))
         cmd = [tcpdump_path, '-q', '-l', '-n', '-t', '-i', self._interface]
         if self._sudo:
@@ -170,13 +170,16 @@ class TcpdumpThread(threading.Thread):
             cmd.append(self._capture_filter)
         return cmd
 
-    def _spawn_process(self):
+    def _spawn_process(self) -> None:
         cmd = self._build_command()
         logging.warning(f'Executing privileged command: {cmd}')
         logging.warning('If it fails, restart the program with `--tcpdump-sudo` option')
         with subprocess.Popen(cmd, text=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=None) as self._process_handle:
-            self._process_packets(self._process_handle.stdout)
+            if self._process_handle.stdout is not None:
+                self._process_packets(self._process_handle.stdout)
+            else:
+                logging.error('Could not capture stdout from tcpdump !')
             # cleanup
             logging.info('Terminating tcpdump process...')
             self._process_handle.terminate()
@@ -186,7 +189,7 @@ class TcpdumpThread(threading.Thread):
                 logging.warning(f'tcpdump exited with non zero return code {result}, requesting termination')
                 self._request_termination()
 
-    def run(self):
+    def run(self) -> None:
         logging.info('Starting tcpdump thread...')
         try:
             self._spawn_process()
@@ -197,13 +200,44 @@ class TcpdumpThread(threading.Thread):
 
 
 class HaproxySource:
-    def info(self):
+    class Field(TypedDict):
+        pos: int
+        name: str
+
+    class Tags(TypedDict):
+        origin: str
+        nature: str
+        scope: str
+
+    class Value(TypedDict):
+        type: str
+        value: str
+
+    class FieldTagsValue(TypedDict):
+        field: 'HaproxySource.Field'
+        tags: 'HaproxySource.Tags'
+        value: 'HaproxySource.Value'
+
+    class Info(FieldTagsValue):
+        processNum: int
+
+    class Stat(FieldTagsValue):
+        objType: str
+        proxyId: int
+        id: int
+        processNum: int
+
+    # https://mypy.readthedocs.io/en/stable/common_issues.html#variance
+    InfoType = Sequence[Info]
+    StatType = list[Sequence[Stat]]
+
+    def info(self) -> InfoType:
         raise NotImplementedError
 
-    def stat(self):
+    def stat(self) -> StatType:
         raise NotImplementedError
 
-    def sessions(self):
+    def sessions(self) -> list[str]:
         raise NotImplementedError
 
 
@@ -214,7 +248,7 @@ class Haproxy:
 
     SESSION_SPECIAL_CASE = re.compile(r'^(\w+)\[')
 
-    def __init__(self, source: HaproxySource, request_termination: threading.Event):
+    def __init__(self, source: HaproxySource, request_termination: threading.Event) -> None:
         self.source = source
         self._request_termination = request_termination
         self.info = None
@@ -222,85 +256,88 @@ class Haproxy:
         self.sessions = None
 
     @staticmethod
-    def _extract_dict_name_value(dictionary) -> dict[str, str]:
-        return {d['field']['name']: d['value']['value'] for d in dictionary}
+    def _extract_dict_name_value(items: Sequence[HaproxySource.FieldTagsValue]) -> Iterator[tuple[str, str]]:
+        for item in items:
+            yield item['field']['name'], item['value']['value']
 
     @classmethod
-    def _sub_dict_session_items(cls, items):
+    def _sub_dict_session_items(cls, items: str) -> Iterator[tuple[str, str]]:
         for item in items.split():
             key, value = cls.SESSION_SPECIAL_CASE.sub(r'\1=[', item, count=1).split('=', maxsplit=1)
             yield key, value
 
     @classmethod
-    def _dict_sessions(cls, sessions):
+    def _dict_sessions(cls, sessions: list[str]) -> Iterator[tuple[str, dict[str, str]]]:
         for session in sessions:
             key, items = session.split(': ', maxsplit=1)
             value = dict(cls._sub_dict_session_items(items))
             yield key, value
 
     def refresh(self) -> Self:
-        self.info = self._extract_dict_name_value(self.source.info())
-        self.stat = tuple(self._extract_dict_name_value(item) for item in self.source.stat())
+        self.info = dict(self._extract_dict_name_value(self.source.info()))
+        self.stat = tuple(dict(self._extract_dict_name_value(item)) for item in self.source.stat())
         self.sessions = dict(self._dict_sessions(self.source.sessions()))
         return self
 
-    class UnixSocketSource(HaproxySource):
-        CMD_INFO = 'show info json'
-        CMD_STAT = 'show stat json'
-        CMD_SESS = 'show sess'
 
-        BUFFER_SIZE = 4096
+class UnixSocketSource(HaproxySource):
+    CMD_INFO = 'show info json'
+    CMD_STAT = 'show stat json'
+    CMD_SESS = 'show sess'
 
-        def __init__(self, socket_path):
-            self._path = socket_path
+    BUFFER_SIZE = 4096
 
-        def _get(self, command: str) -> str:
-            buf = bytearray()
-            try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                    client.connect(self._path)
-                    client.sendall(command.encode())
-                    while True:
-                        chunk = client.recv(self.BUFFER_SIZE)
-                        if len(chunk) == 0:
-                            logging.warning('received zero bytes')
-                            break
-                        buf += chunk
-            except socket.error as e:
-                raise AppException(f'Requesting exit because an error happened during haproxy socket processing: {e}')
-            return buf.decode()
+    def __init__(self, socket_path: str) -> None:
+        self._path = socket_path
 
-        def info(self):
-            return json.loads(self._get(self.CMD_INFO))
+    def _get(self, command: str) -> str:
+        buf = bytearray()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(self._path)
+                client.sendall(command.encode())
+                while True:
+                    chunk = client.recv(self.BUFFER_SIZE)
+                    if len(chunk) == 0:
+                        logging.warning('received zero bytes')
+                        break
+                    buf += chunk
+        except socket.error as e:
+            raise AppException(f'Requesting exit because an error happened during haproxy socket processing: {e}')
+        return buf.decode()
 
-        def stat(self):
-            return json.loads(self._get(self.CMD_STAT))
+    def info(self) -> HaproxySource.InfoType:
+        return json.loads(self._get(self.CMD_INFO))  # type: ignore[no-any-return]
 
-        def sessions(self):
-            return self._get(self.CMD_SESS).splitlines()
+    def stat(self) -> HaproxySource.StatType:
+        return json.loads(self._get(self.CMD_STAT))  # type: ignore[no-any-return]
 
-    class FileSource(HaproxySource):
-        def __init__(self, info_file_json: str, stat_file_json: str, sess_file_raw: str):
-            self.info_file_json = info_file_json
-            self.stat_file_json = stat_file_json
-            self.sess_file_raw = sess_file_raw
+    def sessions(self) -> list[str]:
+        return self._get(self.CMD_SESS).splitlines()
 
-        @staticmethod
-        def _read_file(file_path: str) -> str:
-            try:
-                with open(file_path, 'rt') as f:
-                    return f.read()
-            except OSError as e:
-                raise AppException(f'Requesting exit because an error happened during haproxy file processing: {e}')
 
-        def info(self):
-            return json.loads(self._read_file(self.info_file_json))
+class FileSource(HaproxySource):
+    def __init__(self, info_file_json: str, stat_file_json: str, sess_file_raw: str):
+        self.info_file_json = info_file_json
+        self.stat_file_json = stat_file_json
+        self.sess_file_raw = sess_file_raw
 
-        def stat(self):
-            return json.loads(self._read_file(self.stat_file_json))
+    @staticmethod
+    def _read_file(file_path: str) -> str:
+        try:
+            with open(file_path, 'rt') as f:
+                return f.read()
+        except OSError as e:
+            raise AppException(f'Requesting exit because an error happened during haproxy file processing: {e}')
 
-        def sessions(self):
-            return self._read_file(self.sess_file_raw).splitlines()
+    def info(self) -> HaproxySource.InfoType:
+        return json.loads(self._read_file(self.info_file_json))  # type: ignore[no-any-return]
+
+    def stat(self) -> HaproxySource.StatType:
+        return json.loads(self._read_file(self.stat_file_json))  # type: ignore[no-any-return]
+
+    def sessions(self) -> list[str]:
+        return self._read_file(self.sess_file_raw).splitlines()
 
 
 class App:
@@ -308,7 +345,7 @@ class App:
     termination_requested = threading.Event()
 
     @classmethod
-    def main(cls, argv=None):
+    def main(cls, argv: Optional[list[str]] = None):
         if argv is None:
             argv = sys.argv[1:]
 
