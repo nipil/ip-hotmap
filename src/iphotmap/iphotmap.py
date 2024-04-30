@@ -39,7 +39,7 @@ class AppException(Exception):
 
 @dataclasses.dataclass
 class SharedData:
-    tcpdump_active_ip: int = 0
+    tcpdump_active_ips: Optional[tuple[tuple[int, ...], ...]] = None
     lock: threading.Lock = threading.Lock()
 
 
@@ -60,8 +60,8 @@ class TcpdumpThread(threading.Thread):
     _RE_ADDRESSES = re.compile(r'^(?:\S+\s+\S+\s+)?'
                                r'(?:'
                                r'IP\s+(\d+\.\d+\.\d+\.\d+)(?:\.\d+)?\s+>\s+(\d+\.\d+\.\d+\.\d+)(?:\.\d+)?:\s+'
-                               r'|'
-                               r'IP6\s+(\S+?)(?:\.\d+)?\s+>\s+(\S+?)(?:\.\d+)?:\s+'
+                               # r'|'
+                               # r'IP6\s+(\S+?)(?:\.\d+)?\s+>\s+(\S+?)(?:\.\d+)?:\s+'
                                r'|'
                                r'ARP,\s+(?:'
                                r'Request\s+who-has\s+(\S+)\s+(?:\S+\s+)?tell\s+(\S+)'
@@ -90,7 +90,8 @@ class TcpdumpThread(threading.Thread):
             raise AppException(e)
         return result.stdout
 
-    def __init__(self, sudo, interface, capture_filter, interval, hits_ttl, shared_data: SharedData, termination_flag):
+    def __init__(self, sudo, interface, capture_filter, debug_unknown, interval, hits_ttl, shared_data: SharedData,
+                 termination_flag):
         super(TcpdumpThread, self).__init__(daemon=True)
         # checks
         if interface is None:
@@ -101,6 +102,7 @@ class TcpdumpThread(threading.Thread):
         self._sudo = sudo
         self._interface = interface
         self._capture_filter = capture_filter
+        self._debug_unknown = debug_unknown
         self._interval = interval
         self._hits_ttl = hits_ttl
         self._shared_data = shared_data
@@ -122,18 +124,15 @@ class TcpdumpThread(threading.Thread):
         logging.info('Requesting termination.')
         self._termination_flag.set()
 
-    def _get_active_ip_count(self, seen_ip, current_time):
-        active_count = 0
+    def _get_active_ip(self, seen_ip: dict[str, int], current_time: int) -> tuple[tuple[int, ...], ...]:
         threshold_time = current_time - self._hits_ttl
-        for ip, timestamp in seen_ip.items():
-            if timestamp > threshold_time:
-                active_count += 1
-        return active_count
+        return tuple(
+            tuple(int(x) for x in ip.split('.')) for ip, timestamp in seen_ip.items() if timestamp > threshold_time)
 
-    def _publish(self, active_count):
-        # publish data to other threads
+    def _publish_active_ips(self, active_ips):
+        # replace data reference for other threads
         with self._shared_data.lock:
-            self._shared_data.tcpdump_active_ip = active_count
+            self._shared_data.tcpdump_active_ips = active_ips
 
     def _process_packets(self, stream):
         seen_address = dict()
@@ -143,7 +142,8 @@ class TcpdumpThread(threading.Thread):
             # extract
             addresses = self.addresses_from_line(line)
             if addresses is None:
-                print(line.strip())
+                if self._log_unknown:
+                    logging.debug(f'Unrecognized packet line: {line.strip()}')
                 continue
             # update
             current_time = get_time_int()
@@ -157,9 +157,9 @@ class TcpdumpThread(threading.Thread):
             if elapsed_time > self._interval:
                 last_time = current_time
                 # extract
-                active_count = self._get_active_ip_count(seen_address, current_time)
+                active_ips = self._get_active_ip(seen_address, current_time)
                 # publish
-                self._publish(active_count)
+                self._publish_active_ips(active_ips)
 
     def _build_command(self):
         tcpdump_path = str(find_cmd_from_env_path(self.COMMAND))
@@ -210,7 +210,7 @@ class HaproxySource:
 class Haproxy:
     info: Optional[dict[str, str]]
     stat: Optional[tuple[dict[str, str], ...]]
-    # sessions: Optional[Any]
+    sessions: Optional[dict[str, dict[str, str]]]
 
     SESSION_SPECIAL_CASE = re.compile(r'^(\w+)\[')
 
@@ -319,6 +319,7 @@ class App:
         parser.add_argument('--hits-ttl', type=int, default=DEFAULT_TTL_SEC)
         parser.add_argument('--tcpdump-interface')
         parser.add_argument('--tcpdump-filter')
+        parser.add_argument('--tcpdump-debug-unknown', action='store_true')
         parser.add_argument('--tcpdump-sudo', action='store_true')
         args = parser.parse_args(argv)
 
@@ -332,8 +333,9 @@ class App:
 
         logging.info('Starting tcpdump...')
         try:
-            tcpdump = TcpdumpThread(args.tcpdump_sudo, args.tcpdump_interface, args.tcpdump_filter, args.interval,
-                                    args.hits_ttl, shared_data=shared_data, termination_flag=cls.termination_requested)
+            tcpdump = TcpdumpThread(args.tcpdump_sudo, args.tcpdump_interface, args.tcpdump_filter,
+                                    args.tcpdump_debug_unknown, args.interval, args.hits_ttl, shared_data=shared_data,
+                                    termination_flag=cls.termination_requested)
         except AppException as e:
             logging.error(e)
             return
@@ -353,9 +355,10 @@ class App:
             last_time = current_time
             # pull
             with shared_data.lock:
-                tcpdump_active_count = shared_data.tcpdump_active_ip
+                tcpdump_active_ips = shared_data.tcpdump_active_ips
             # display
-            print(f'{tcpdump_active_count} ip seen in the last {args.hits_ttl} seconds.')
+            if tcpdump_active_ips is not None:
+                print(f'{len(tcpdump_active_ips)} ip seen in the last {args.hits_ttl} seconds.')
             # exit
             if cls.termination_requested.is_set():
                 logging.info('Exiting main display loop...')
