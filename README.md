@@ -1,6 +1,6 @@
 # ip-hotmap
 
-A curses-based ip hot-map display
+A curses-based ip hot-map display (uses tcpdump raw packets, and haproxy socket stats)
 
 ## Dev install
 
